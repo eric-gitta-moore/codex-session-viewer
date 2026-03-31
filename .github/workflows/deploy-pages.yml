@@ -35,6 +35,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --registry=https://registry.npmjs.org
 
+      - name: Install Linux rolldown binding
+        if: runner.os == 'Linux'
+        run: npm install --no-save @rolldown/binding-linux-x64-gnu@1.0.0-rc.12 --registry=https://registry.npmjs.org
+
       - name: Build site
         run: npm run build
 
