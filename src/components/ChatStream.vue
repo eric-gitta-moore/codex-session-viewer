@@ -34,6 +34,11 @@ watch(
 
 const virtualItems = computed(() => rowVirtualizer.value.getVirtualItems())
 
+function getVirtualItemDomKey(virtualItem: { key: string | number | bigint }) {
+  // Vue's DOM key type excludes bigint, so normalize virtualizer keys before rendering.
+  return typeof virtualItem.key === 'bigint' ? virtualItem.key.toString() : virtualItem.key
+}
+
 async function handleRequestDetail(eventId: string): Promise<void> {
   if (detailMap.value.has(eventId) || loadingIds.value.has(eventId)) {
     return
@@ -67,7 +72,7 @@ async function handleRequestDetail(eventId: string): Promise<void> {
     >
       <div
         v-for="virtualItem in virtualItems"
-        :key="virtualItem.key"
+        :key="getVirtualItemDomKey(virtualItem)"
         :data-index="virtualItem.index"
         :ref="(element) => rowVirtualizer.measureElement(element as Element)"
         class="chat-stream__item"
