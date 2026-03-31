@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, shallowRef, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import ChatStream from './components/ChatStream.vue'
 import FileDropzone from './components/FileDropzone.vue'
 import type { ParseProgress, SessionEventLite, SessionIndex } from './types/session'
 import { formatDuration, loadEventDetail, parseSessionFile } from './utils/sessionParser'
+
+type SearchResult = {
+  event: SessionEventLite
+  excerpt: string
+}
 
 const session = shallowRef<SessionIndex | null>(null)
 const loading = ref(false)
@@ -11,7 +16,10 @@ const errorMessage = ref<string | null>(null)
 const parseProgress = shallowRef<ParseProgress | null>(null)
 const searchInput = ref('')
 const searchKeyword = ref('')
+const focusedEventId = ref<string | null>(null)
+const focusedEventPulse = ref(0)
 const showVerbose = ref(false)
+const chatStreamRef = ref<{ scrollToEvent: (eventId: string) => Promise<void> } | null>(null)
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -25,23 +33,20 @@ watch(searchInput, (value) => {
   }, 180)
 })
 
-const visibleEvents = computed<SessionEventLite[]>(() => {
+onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+})
+
+const displayEvents = computed<SessionEventLite[]>(() => {
   if (!session.value) return []
 
   const filtered = session.value.events.filter((event) => {
     if (!showVerbose.value && event.hiddenByDefault) {
       return false
     }
-
-    if (!searchKeyword.value) {
-      return true
-    }
-
-    return (
-      event.title.toLowerCase().includes(searchKeyword.value) ||
-      event.summary.toLowerCase().includes(searchKeyword.value) ||
-      event.bodyPreview.toLowerCase().includes(searchKeyword.value)
-    )
+    return true
   })
 
   return filtered.filter((event, index) => {
@@ -54,6 +59,51 @@ const visibleEvents = computed<SessionEventLite[]>(() => {
       previous.summary === event.summary
     )
   })
+})
+
+function getSearchableText(event: SessionEventLite): string {
+  // Search operates on the lightweight event fields so we can avoid loading full message details.
+  return `${event.title}\n${event.summary}\n${event.bodyPreview}`.toLowerCase()
+}
+
+function buildSearchExcerpt(event: SessionEventLite): string {
+  const excerptSource = event.summary || event.bodyPreview || event.title
+  const normalized = excerptSource.replace(/\s+/g, ' ').trim()
+
+  return normalized.slice(0, 120)
+}
+
+const searchState = computed(() => {
+  if (!searchKeyword.value) {
+    return {
+      total: 0,
+      results: [] as SearchResult[],
+    }
+  }
+
+  const results: SearchResult[] = []
+  let total = 0
+
+  // Stop collecting visible rows after a small cap, but keep counting the full match total for feedback.
+  for (const event of displayEvents.value) {
+    if (!getSearchableText(event).includes(searchKeyword.value)) {
+      continue
+    }
+
+    total += 1
+
+    if (results.length < 8) {
+      results.push({
+        event,
+        excerpt: buildSearchExcerpt(event),
+      })
+    }
+  }
+
+  return {
+    total,
+    results,
+  }
 })
 
 const headlineStats = computed(() => {
@@ -82,7 +132,7 @@ const feedStats = computed(() => {
     },
     {
       label: '可见消息',
-      value: String(visibleEvents.value.length),
+      value: String(displayEvents.value.length),
     },
     {
       label: '解析告警',
@@ -103,6 +153,7 @@ async function handleFileSelect(file: File): Promise<void> {
   loading.value = true
   errorMessage.value = null
   session.value = null
+  focusedEventId.value = null
   parseProgress.value = {
     loadedBytes: 0,
     totalBytes: file.size,
@@ -119,6 +170,22 @@ async function handleFileSelect(file: File): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function jumpToEvent(eventId: string): Promise<void> {
+  focusedEventId.value = eventId
+  focusedEventPulse.value += 1
+  await chatStreamRef.value?.scrollToEvent(eventId)
+}
+
+async function handleSearchEnter(): Promise<void> {
+  const firstMatch = searchState.value.results[0]
+
+  if (!firstMatch) {
+    return
+  }
+
+  await jumpToEvent(firstMatch.event.id)
 }
 
 function pillClass(category: SessionEventLite['category']): string {
@@ -193,12 +260,52 @@ function pillClass(category: SessionEventLite['category']): string {
           </div>
 
           <div class="chat-shell__controls">
-            <input
-              v-model="searchInput"
-              class="toolbar__search"
-              type="search"
-              placeholder="搜索消息、工具、输出"
-            />
+            <div class="toolbar__search-wrap">
+              <input
+                v-model="searchInput"
+                class="toolbar__search"
+                type="search"
+                placeholder="搜索消息、工具、输出"
+                @keydown.enter.prevent="handleSearchEnter"
+              />
+
+              <div
+                v-if="searchKeyword"
+                class="toolbar__search-results"
+              >
+                <div class="toolbar__search-results-head">
+                  <span>检索结果</span>
+                  <strong>{{ searchState.total }}</strong>
+                </div>
+
+                <p
+                  v-if="!searchState.total"
+                  class="toolbar__search-empty"
+                >
+                  没有找到匹配消息
+                </p>
+
+                <button
+                  v-for="result in searchState.results"
+                  :key="result.event.id"
+                  class="toolbar__search-result"
+                  type="button"
+                  @click="jumpToEvent(result.event.id)"
+                >
+                  <span
+                    class="pill"
+                    :class="pillClass(result.event.category)"
+                  >
+                    {{ result.event.category }}
+                  </span>
+                  <span class="toolbar__search-result-copy">
+                    <strong>{{ result.event.title }}</strong>
+                    <small>{{ result.excerpt || '无摘要内容' }}</small>
+                  </span>
+                  <time>{{ new Date(result.event.timestamp).toLocaleTimeString('zh-CN') }}</time>
+                </button>
+              </div>
+            </div>
             <label class="toolbar__toggle">
               <input
                 v-model="showVerbose"
@@ -222,7 +329,7 @@ function pillClass(category: SessionEventLite['category']): string {
 
         <div class="chat-shell__tags">
           <span
-            v-for="event in visibleEvents.slice(0, 10)"
+            v-for="event in displayEvents.slice(0, 10)"
             :key="event.id"
             class="pill"
             :class="pillClass(event.category)"
@@ -232,7 +339,10 @@ function pillClass(category: SessionEventLite['category']): string {
         </div>
 
         <ChatStream
-          :events="visibleEvents"
+          ref="chatStreamRef"
+          :events="displayEvents"
+          :focused-event-id="focusedEventId"
+          :focused-event-pulse="focusedEventPulse"
           :load-detail="loadEventDetail"
         />
       </section>

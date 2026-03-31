@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { useVirtualizer } from '@tanstack/vue-virtual'
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, ref, shallowRef, watch } from 'vue'
 import type { SessionEventDetail, SessionEventLite } from '../types/session'
 import ChatMessageRow from './ChatMessageRow.vue'
 
 const props = defineProps<{
   events: SessionEventLite[]
+  focusedEventId?: string | null
+  focusedEventPulse?: number
   loadDetail: (eventId: string) => Promise<SessionEventDetail>
 }>()
 
@@ -33,10 +35,31 @@ watch(
 )
 
 const virtualItems = computed(() => rowVirtualizer.value.getVirtualItems())
+const eventIndexMap = computed(() => {
+  const indexMap = new Map<string, number>()
+
+  // Keep a fast lookup table so search results can jump to a message without scanning the list.
+  props.events.forEach((event, index) => {
+    indexMap.set(event.id, index)
+  })
+
+  return indexMap
+})
 
 function getVirtualItemDomKey(virtualItem: { key: string | number | bigint }) {
   // Vue's DOM key type excludes bigint, so normalize virtualizer keys before rendering.
   return typeof virtualItem.key === 'bigint' ? virtualItem.key.toString() : virtualItem.key
+}
+
+async function scrollToEvent(eventId: string): Promise<void> {
+  const targetIndex = eventIndexMap.value.get(eventId)
+
+  if (targetIndex === undefined) {
+    return
+  }
+
+  await nextTick()
+  rowVirtualizer.value.scrollToIndex(targetIndex, { align: 'center' })
 }
 
 async function handleRequestDetail(eventId: string): Promise<void> {
@@ -59,6 +82,10 @@ async function handleRequestDetail(eventId: string): Promise<void> {
     loadingIds.value = nextLoadingIdsAfterLoad
   }
 }
+
+defineExpose({
+  scrollToEvent,
+})
 </script>
 
 <template>
@@ -82,6 +109,8 @@ async function handleRequestDetail(eventId: string): Promise<void> {
           :event="events[virtualItem.index]"
           :detail="detailMap.get(events[virtualItem.index].id) ?? null"
           :detail-loading="loadingIds.has(events[virtualItem.index].id)"
+          :is-focused="events[virtualItem.index].id === focusedEventId"
+          :focus-pulse-token="events[virtualItem.index].id === focusedEventId ? (focusedEventPulse ?? 0) : 0"
           @request-detail="handleRequestDetail"
         />
       </div>

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { SessionEventDetail, SessionEventLite } from '../types/session'
 
 const props = defineProps<{
   event: SessionEventLite
   detail: SessionEventDetail | null
   detailLoading: boolean
+  isFocused: boolean
+  focusPulseToken: number
 }>()
 
 const emit = defineEmits<{
@@ -46,12 +48,43 @@ function bodyClass(category: SessionEventLite['category']): string {
 const isBubble = computed(() => {
   return props.event.category === 'user' || props.event.category === 'assistant'
 })
+const isFlashing = ref(false)
+
+let flashResetTimer: ReturnType<typeof setTimeout> | null = null
 
 function handleToggle(nextOpen: boolean): void {
   if (nextOpen && !props.detail && !props.detailLoading) {
     emit('requestDetail', props.event.id)
   }
 }
+
+watch(
+  () => [props.isFocused, props.focusPulseToken] as const,
+  async ([isFocusedNow, pulseToken], [, previousPulseToken]) => {
+    if (!isFocusedNow || pulseToken === 0 || pulseToken === previousPulseToken) {
+      return
+    }
+
+    if (flashResetTimer) {
+      clearTimeout(flashResetTimer)
+    }
+
+    // Reset once before replaying so repeated jumps to the same message still animate.
+    isFlashing.value = false
+    await Promise.resolve()
+    isFlashing.value = true
+    flashResetTimer = setTimeout(() => {
+      isFlashing.value = false
+      flashResetTimer = null
+    }, 1400)
+  },
+)
+
+onBeforeUnmount(() => {
+  if (flashResetTimer) {
+    clearTimeout(flashResetTimer)
+  }
+})
 </script>
 
 <template>
@@ -73,7 +106,13 @@ function handleToggle(nextOpen: boolean): void {
 
       <div
         class="chat-message"
-        :class="bodyClass(event.category)"
+        :class="[
+          bodyClass(event.category),
+          {
+            'chat-message--focused': isFocused,
+            'chat-message--flash': isFlashing,
+          },
+        ]"
       >
         <div class="chat-message__meta">
           <span>{{ speakerLabel(event.category) }}</span>
@@ -103,6 +142,10 @@ function handleToggle(nextOpen: boolean): void {
     <template v-else>
       <details
         class="chat-inline-card chat-inline-card--compact"
+        :class="{
+          'chat-inline-card--focused': isFocused,
+          'chat-inline-card--flash': isFlashing,
+        }"
         @toggle="handleToggle(($event.target as HTMLDetailsElement).open)"
       >
         <summary class="chat-inline-card__summary">
