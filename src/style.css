@@ -297,7 +297,8 @@ pre {
 }
 
 .toolbar__search,
-.toolbar__toggle {
+.toolbar__toggle,
+.toolbar__select {
   border-radius: 999px;
   border: 1px solid rgba(53, 40, 29, 0.12);
   background: #fff;
@@ -397,6 +398,20 @@ pre {
   gap: 8px;
   padding: 10px 14px;
   color: var(--text-soft);
+}
+
+.toolbar__select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 0.88rem;
+}
+
+.toolbar__select {
+  padding: 10px 14px;
+  color: var(--text);
+  min-width: 158px;
 }
 
 .pill {

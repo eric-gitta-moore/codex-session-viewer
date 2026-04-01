@@ -11,6 +11,10 @@ const props = defineProps<{
   loadDetail: (eventId: string) => Promise<SessionEventDetail>
 }>()
 
+const emit = defineEmits<{
+  visibleChange: [eventIds: string[]]
+}>()
+
 const scrollElement = ref<HTMLElement | null>(null)
 const detailMap = shallowRef(new Map<string, SessionEventDetail>())
 const loadingIds = shallowRef(new Set<string>())
@@ -35,6 +39,20 @@ watch(
 )
 
 const virtualItems = computed(() => rowVirtualizer.value.getVirtualItems())
+
+watch(
+  virtualItems,
+  (items) => {
+    // 把当前虚拟列表窗口里的消息 id 回传给父组件，用于同步顶部概览标签。
+    const nextVisibleEventIds = items
+      .map((item) => props.events[item.index]?.id ?? null)
+      .filter((eventId): eventId is string => Boolean(eventId))
+
+    emit('visibleChange', nextVisibleEventIds)
+  },
+  { immediate: true },
+)
+
 const eventIndexMap = computed(() => {
   const indexMap = new Map<string, number>()
 

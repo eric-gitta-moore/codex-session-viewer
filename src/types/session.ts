@@ -45,6 +45,7 @@ export interface SessionEventLite {
   turnId: string | null
   callId: string | null
   title: string
+  tagTitles: string[]
   summary: string
   statusLabel: string | null
   bodyText: string

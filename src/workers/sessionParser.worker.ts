@@ -55,6 +55,7 @@ interface PendingToolBatch {
   sections: SessionEventDetailSection[]
   toolTitles: string[]
   callIds: string[]
+  invocationCount: number
 }
 
 type WorkerInboundMessage =
@@ -332,12 +333,38 @@ function formatCompactDuration(durationMs: number | null): string {
   return parts.join(' ')
 }
 
-function buildToolStatusLabel(durationMs: number | null, isComplete: boolean): string {
+function formatToolInvocationCount(invocationCount: number): string {
+  return `${invocationCount} 次工具调用`
+}
+
+function formatCompactToolInvocationCount(invocationCount: number): string {
+  return `${invocationCount} 次`
+}
+
+function buildToolStatusLabel(
+  durationMs: number | null,
+  isComplete: boolean,
+  invocationCount: number,
+): string {
+  const countLabel = `（${formatToolInvocationCount(invocationCount)}）`
   if (!isComplete) {
-    return '工具调用中'
+    return `工具调用中 ${countLabel}`
   }
 
-  return `已处理 ${formatCompactDuration(durationMs)}`
+  return `已处理 ${formatCompactDuration(durationMs)} ${countLabel}`
+}
+
+function isToolInvocationRecord(record: RawRecord): boolean {
+  const payloadType = getString(record.payload?.type ?? null)
+
+  return (
+    payloadType === 'function_call' ||
+    payloadType === 'custom_tool_call' ||
+    payloadType === 'web_search_call' ||
+    payloadType === 'mcp_tool_call_end' ||
+    payloadType === 'exec_command_end' ||
+    payloadType === 'web_search_end'
+  )
 }
 
 function formatRawDetailSection(title: string, rawLine: string): string {
@@ -463,6 +490,7 @@ function createToolBatch(
     sections: [createToolBatchDetailSection(record, rawLine)],
     toolTitles: [buildTitle(record)],
     callIds: callId ? [callId] : [],
+    invocationCount: isToolInvocationRecord(record) ? 1 : 0,
   }
 }
 
@@ -483,6 +511,12 @@ function appendToolBatchRecord(pending: PendingToolBatch, record: RawRecord, raw
   if (callId && !pending.callIds.includes(callId)) {
     pending.callIds.push(callId)
   }
+
+  if (isToolInvocationRecord(record) && !callId) {
+    pending.invocationCount += 1
+  } else if (callId && pending.callIds.includes(callId) && isToolInvocationRecord(record)) {
+    pending.invocationCount = pending.callIds.length
+  }
 }
 
 function buildToolBatchTitle(pending: PendingToolBatch): string {
@@ -497,7 +531,12 @@ function buildToolBatchTitle(pending: PendingToolBatch): string {
   return `工具调用 · ${pending.toolTitles.length} 项`
 }
 
+function buildToolBatchTagTitle(invocationCount: number): string {
+  return `工具调用（${formatCompactToolInvocationCount(invocationCount)}）`
+}
+
 function flushToolBatch(state: ParseState, pending: PendingToolBatch): void {
+  const invocationCount = Math.max(pending.invocationCount, pending.callIds.length, 1)
   const detailBodyText = pending.sections
     .map((section, index) => {
       return [`事件 ${index + 1} · ${section.title}`, section.bodyText].filter(Boolean).join('\n')
@@ -523,8 +562,14 @@ function flushToolBatch(state: ParseState, pending: PendingToolBatch): void {
       turnId: pending.turnId,
       callId: pending.callIds[0] ?? null,
       title: buildToolBatchTitle(pending),
+      // 顶部可见范围概览里，工具批次保持单条汇总即可，避免被具体工具名刷屏。
+      tagTitles: [buildToolBatchTagTitle(invocationCount)],
       summary: clampPreview(detailBodyText, PREVIEW_LIMIT),
-      statusLabel: buildToolStatusLabel(durationMs, true),
+      statusLabel: buildToolStatusLabel(
+        durationMs,
+        true,
+        invocationCount,
+      ),
       bodyText: '',
       bodyPreview: clampPreview(detailBodyText, BODY_PREVIEW_LIMIT),
       hiddenByDefault: false,
@@ -661,6 +706,7 @@ function processParsedRecord(
       turnId: resolvedTurnId,
       callId,
       title: buildTitle(record),
+      tagTitles: [buildTitle(record)],
       summary: buildSummary(record),
       statusLabel: null,
       // 主消息流里的用户和助手气泡默认直接展示完整正文，工具与调试节点仍保持摘要模式。

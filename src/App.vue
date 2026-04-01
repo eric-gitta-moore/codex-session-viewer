@@ -10,6 +10,13 @@ type SearchResult = {
   excerpt: string
 }
 
+type RoleFilterValue = 'all' | SessionEventLite['category']
+type VisibleTagItem = {
+  id: string
+  title: string
+  category: SessionEventLite['category']
+}
+
 const session = shallowRef<SessionIndex | null>(null)
 const loading = ref(false)
 const errorMessage = ref<string | null>(null)
@@ -19,6 +26,8 @@ const searchKeyword = ref('')
 const focusedEventId = ref<string | null>(null)
 const focusedEventPulse = ref(0)
 const showVerbose = ref(false)
+const roleFilter = ref<RoleFilterValue>('all')
+const visibleEventIds = ref<string[]>([])
 const chatStreamRef = ref<{ scrollToEvent: (eventId: string) => Promise<void> } | null>(null)
 
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -39,18 +48,84 @@ onBeforeUnmount(() => {
   }
 })
 
-const displayEvents = computed<SessionEventLite[]>(() => {
+const baseVisibleEvents = computed<SessionEventLite[]>(() => {
   if (!session.value) return []
 
-  const filtered = session.value.events.filter((event) => {
+  return session.value.events.filter((event) => {
     if (!showVerbose.value && event.hiddenByDefault) {
       return false
     }
     return true
   })
+})
 
-  return filtered.filter((event, index) => {
-    const previous = filtered[index - 1]
+function roleFilterLabel(category: RoleFilterValue): string {
+  if (category === 'all') return '全部消息'
+  if (category === 'user') return '用户'
+  if (category === 'assistant') return '助手'
+  if (category === 'tool') return '工具'
+  if (category === 'system') return '系统'
+  if (category === 'context') return '上下文'
+  if (category === 'reasoning') return '推理'
+  if (category === 'metrics') return '指标'
+  if (category === 'lifecycle') return '生命周期'
+  return '其他'
+}
+
+const roleFilterOptions = computed(() => {
+  const counts = new Map<RoleFilterValue, number>()
+
+  for (const event of baseVisibleEvents.value) {
+    const nextCount = counts.get(event.category) ?? 0
+    counts.set(event.category, nextCount + 1)
+  }
+
+  const priorityOrder: SessionEventLite['category'][] = [
+    'user',
+    'assistant',
+    'tool',
+    'system',
+    'context',
+    'reasoning',
+    'metrics',
+    'lifecycle',
+    'other',
+  ]
+
+  const options = priorityOrder
+    .filter((category) => counts.has(category))
+    .map((category) => ({
+      value: category,
+      label: roleFilterLabel(category),
+      count: counts.get(category) ?? 0,
+    }))
+
+  return [
+    {
+      value: 'all' as const,
+      label: roleFilterLabel('all'),
+      count: baseVisibleEvents.value.length,
+    },
+    ...options,
+  ]
+})
+
+watch(roleFilterOptions, (options) => {
+  if (options.some((option) => option.value === roleFilter.value)) {
+    return
+  }
+
+  roleFilter.value = 'all'
+})
+
+const displayEvents = computed<SessionEventLite[]>(() => {
+  const filteredByRole =
+    roleFilter.value === 'all'
+      ? baseVisibleEvents.value
+      : baseVisibleEvents.value.filter((event) => event.category === roleFilter.value)
+
+  return filteredByRole.filter((event, index) => {
+    const previous = filteredByRole[index - 1]
     if (!previous) return true
 
     // 工具调用现在会聚合成单条耗时分隔线；这里不要再把相邻工具行误判成重复记录。
@@ -146,6 +221,35 @@ const feedStats = computed(() => {
   ]
 })
 
+const visibleTagEvents = computed(() => {
+  if (!displayEvents.value.length) {
+    return []
+  }
+
+  if (!visibleEventIds.value.length) {
+    return displayEvents.value.slice(0, 10)
+  }
+
+  const visibleIdSet = new Set(visibleEventIds.value)
+  const visibleEvents = displayEvents.value.filter((event) => visibleIdSet.has(event.id))
+
+  return visibleEvents.slice(0, 10)
+})
+
+const visibleTagItems = computed<VisibleTagItem[]>(() => {
+  return visibleTagEvents.value
+    .flatMap((event) => {
+      const tagTitles = event.tagTitles.length ? event.tagTitles : [event.title]
+
+      return tagTitles.map((title, index) => ({
+        id: `${event.id}-tag-${index}`,
+        title,
+        category: event.category,
+      }))
+    })
+    .slice(0, 10)
+})
+
 const progressPercent = computed(() => {
   if (!parseProgress.value?.totalBytes) return 0
   return Math.min(
@@ -159,6 +263,7 @@ async function handleFileSelect(file: File): Promise<void> {
   errorMessage.value = null
   session.value = null
   focusedEventId.value = null
+  visibleEventIds.value = []
   parseProgress.value = {
     loadedBytes: 0,
     totalBytes: file.size,
@@ -191,6 +296,10 @@ async function handleSearchEnter(): Promise<void> {
   }
 
   await jumpToEvent(firstMatch.event.id)
+}
+
+function handleVisibleChange(eventIds: string[]): void {
+  visibleEventIds.value = eventIds
 }
 
 function pillClass(category: SessionEventLite['category']): string {
@@ -311,6 +420,21 @@ function pillClass(category: SessionEventLite['category']): string {
                 </button>
               </div>
             </div>
+            <label class="toolbar__select-wrap">
+              <span>只看</span>
+              <select
+                v-model="roleFilter"
+                class="toolbar__select"
+              >
+                <option
+                  v-for="option in roleFilterOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}（{{ option.count }}）
+                </option>
+              </select>
+            </label>
             <label class="toolbar__toggle">
               <input
                 v-model="showVerbose"
@@ -334,12 +458,12 @@ function pillClass(category: SessionEventLite['category']): string {
 
         <div class="chat-shell__tags">
           <span
-            v-for="event in displayEvents.slice(0, 10)"
-            :key="event.id"
+            v-for="item in visibleTagItems"
+            :key="item.id"
             class="pill"
-            :class="pillClass(event.category)"
+            :class="pillClass(item.category)"
           >
-            {{ event.title }}
+            {{ item.title }}
           </span>
         </div>
 
@@ -349,6 +473,7 @@ function pillClass(category: SessionEventLite['category']): string {
           :focused-event-id="focusedEventId"
           :focused-event-pulse="focusedEventPulse"
           :load-detail="loadEventDetail"
+          @visible-change="handleVisibleChange"
         />
       </section>
     </template>
