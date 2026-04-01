@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import MarkdownIt from 'markdown-it'
 import type { SessionEventDetail, SessionEventLite } from '../types/session'
 
 const props = defineProps<{
@@ -45,6 +46,117 @@ function bodyClass(category: SessionEventLite['category']): string {
   return `chat-message--${category}`
 }
 
+const LOCAL_FILE_REFERENCE_PATTERN = /^(\/[^?#]+)(?:#L(\d+)(?:C(\d+))?)?$/
+
+function isLocalFileReference(href: string): boolean {
+  return LOCAL_FILE_REFERENCE_PATTERN.test(href)
+}
+
+function formatMessageReferenceLabel(rawLabel: string, href: string): string {
+  const localPathMatch = href.match(LOCAL_FILE_REFERENCE_PATTERN)
+  if (!localPathMatch) {
+    return rawLabel
+  }
+
+  const [, absolutePath, lineNumber, columnNumber] = localPathMatch
+  const fileName = decodeURIComponent(absolutePath.split('/').filter(Boolean).pop() ?? rawLabel)
+
+  if (!lineNumber) {
+    return fileName
+  }
+
+  if (columnNumber) {
+    return `${fileName} (line ${lineNumber}, col ${columnNumber})`
+  }
+
+  return `${fileName} (line ${lineNumber})`
+}
+
+function createMarkdownRenderer(): MarkdownIt {
+  const renderer = new MarkdownIt({
+    html: false,
+    breaks: true,
+    linkify: true,
+  })
+
+  const defaultLinkOpenRule =
+    renderer.renderer.rules.link_open ??
+    ((tokens, index, options, _env, self) => {
+      return self.renderToken(tokens, index, options)
+    })
+
+  // 统一给聊天正文做 markdown 渲染，并把本地文件引用转成更适合阅读的短标签。
+  renderer.core.ruler.after('inline', 'codex-chat-local-links', (state) => {
+    for (const token of state.tokens) {
+      const children = token.children
+      if (!children) {
+        continue
+      }
+
+      let activeLocalHref: string | null = null
+
+      for (const child of children) {
+        if (child.type === 'link_open') {
+          const href = child.attrGet('href') ?? ''
+          if (!isLocalFileReference(href)) {
+            activeLocalHref = null
+            continue
+          }
+
+          activeLocalHref = href
+          child.type = 'codex_local_link_open'
+          child.tag = 'span'
+          child.attrs = [
+            ['class', 'chat-message__link chat-message__link--local'],
+            ['title', href],
+          ]
+          continue
+        }
+
+        if (child.type === 'link_close' && activeLocalHref) {
+          child.type = 'codex_local_link_close'
+          child.tag = 'span'
+          child.attrs = null
+          activeLocalHref = null
+          continue
+        }
+
+        if (!activeLocalHref) {
+          continue
+        }
+
+        if (child.type === 'text' || child.type === 'code_inline') {
+          child.content = formatMessageReferenceLabel(child.content, activeLocalHref)
+        }
+      }
+    }
+  })
+
+  renderer.renderer.rules.link_open = (tokens, index, options, env, self) => {
+    const token = tokens[index]
+    token.attrJoin('class', 'chat-message__link')
+    token.attrSet('target', '_blank')
+    token.attrSet('rel', 'noreferrer')
+    return defaultLinkOpenRule(tokens, index, options, env, self)
+  }
+
+  renderer.renderer.rules.codex_local_link_open = (tokens, index, options, _env, self) => {
+    return self.renderToken(tokens, index, options)
+  }
+
+  renderer.renderer.rules.codex_local_link_close = (tokens, index, options, _env, self) => {
+    return self.renderToken(tokens, index, options)
+  }
+
+  return renderer
+}
+
+const messageMarkdownRenderer = createMarkdownRenderer()
+
+function renderMessageMarkdown(text: string): string {
+  return messageMarkdownRenderer.render(text).trim()
+}
+
 const isBubble = computed(() => {
   return props.event.category === 'user' || props.event.category === 'assistant'
 })
@@ -53,6 +165,9 @@ const isToolStatus = computed(() => {
 })
 const bodyContent = computed(() => {
   return isBubble.value ? props.event.bodyText || props.event.bodyPreview : props.event.bodyPreview
+})
+const bodyHtml = computed(() => {
+  return isBubble.value ? renderMessageMarkdown(bodyContent.value) : ''
 })
 const detailSummaryLabel = computed(() => {
   return isBubble.value ? '查看原始事件' : '查看完整内容'
@@ -129,7 +244,10 @@ onBeforeUnmount(() => {
           },
         ]"
       >
-        <pre class="chat-message__body">{{ bodyContent }}</pre>
+        <div
+          class="chat-message__body"
+          v-html="bodyHtml"
+        />
         <details
           class="chat-message__details chat-message__details--bubble"
           @toggle="handleToggle(($event.target as HTMLDetailsElement).open)"
