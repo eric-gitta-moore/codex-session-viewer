@@ -48,6 +48,21 @@ function bodyClass(category: SessionEventLite['category']): string {
 const isBubble = computed(() => {
   return props.event.category === 'user' || props.event.category === 'assistant'
 })
+const isToolStatus = computed(() => {
+  return props.event.category === 'tool'
+})
+const bodyContent = computed(() => {
+  return isBubble.value ? props.event.bodyText || props.event.bodyPreview : props.event.bodyPreview
+})
+const detailSummaryLabel = computed(() => {
+  return isBubble.value ? '查看原始事件' : '查看完整内容'
+})
+const toolStatusLabel = computed(() => {
+  return props.event.statusLabel ?? '工具调用'
+})
+const toolBatchSections = computed(() => {
+  return isToolStatus.value ? props.detail?.sections ?? [] : []
+})
 const isFlashing = ref(false)
 
 let flashResetTimer: ReturnType<typeof setTimeout> | null = null
@@ -115,16 +130,14 @@ onBeforeUnmount(() => {
         ]"
       >
         <div class="chat-message__meta">
-          <span>{{ speakerLabel(event.category) }}</span>
           <time>{{ formatTime(event.timestamp) }}</time>
         </div>
-        <p class="chat-message__title">{{ event.title }}</p>
-        <pre class="chat-message__body">{{ event.bodyPreview }}</pre>
+        <pre class="chat-message__body">{{ bodyContent }}</pre>
         <details
           class="chat-message__details"
           @toggle="handleToggle(($event.target as HTMLDetailsElement).open)"
         >
-          <summary>查看完整内容</summary>
+          <summary>{{ detailSummaryLabel }}</summary>
           <p
             v-if="detailLoading"
             class="chat-message__loading"
@@ -132,11 +145,88 @@ onBeforeUnmount(() => {
             正在加载详情…
           </p>
           <template v-else-if="detail">
-            <pre>{{ detail.bodyText }}</pre>
-            <pre>{{ detail.rawText }}</pre>
+            <pre
+              v-if="!isBubble"
+              class="chat-detail-block"
+            >{{ detail.bodyText }}</pre>
+            <div class="chat-detail-scroll">
+              <pre class="chat-detail-block chat-detail-block--raw">{{ detail.rawText }}</pre>
+            </div>
           </template>
         </details>
       </div>
+    </template>
+
+    <template v-else-if="isToolStatus">
+      <details
+        class="chat-tool-status"
+        :class="{
+          'chat-tool-status--focused': isFocused,
+          'chat-tool-status--flash': isFlashing,
+        }"
+        @toggle="handleToggle(($event.target as HTMLDetailsElement).open)"
+      >
+        <summary class="chat-tool-status__summary">
+          <span class="chat-tool-status__line" />
+          <span class="chat-tool-status__label">{{ toolStatusLabel }}</span>
+          <span class="chat-tool-status__line" />
+        </summary>
+
+        <div class="chat-tool-status__content">
+          <div class="chat-tool-status__meta">
+            <strong>{{ event.title }}</strong>
+            <time>{{ formatTime(event.timestamp) }}</time>
+          </div>
+          <pre
+            v-if="event.bodyPreview && !toolBatchSections.length"
+            class="chat-tool-status__preview"
+          >{{ event.bodyPreview }}</pre>
+          <p
+            v-else-if="toolBatchSections.length"
+            class="chat-tool-status__hint"
+          >
+            共 {{ toolBatchSections.length }} 条工具事件，按需展开查看。
+          </p>
+          <p
+            v-if="detailLoading"
+            class="chat-message__loading"
+          >
+            正在加载详情…
+          </p>
+          <template v-else-if="detail">
+            <template v-if="toolBatchSections.length">
+              <details
+                v-for="(section, index) in toolBatchSections"
+                :key="`${event.id}-tool-section-${index}`"
+                class="chat-inline-card chat-inline-card--compact chat-tool-status__entry"
+              >
+                <summary class="chat-inline-card__summary">
+                  <span class="chat-inline-card__dot" />
+                  <span class="chat-inline-card__speaker">事件 {{ index + 1 }}</span>
+                  <span class="chat-inline-card__title">{{ section.title }}</span>
+                  <span class="chat-inline-card__time">{{ formatTime(section.timestamp || event.timestamp) }}</span>
+                </summary>
+
+                <div class="chat-inline-card__content">
+                  <pre
+                    v-if="section.bodyText"
+                    class="chat-detail-block"
+                  >{{ section.bodyText }}</pre>
+                  <div class="chat-detail-scroll">
+                    <pre class="chat-detail-block chat-detail-block--raw">{{ section.rawText }}</pre>
+                  </div>
+                </div>
+              </details>
+            </template>
+            <template v-else>
+              <pre class="chat-detail-block">{{ detail.bodyText }}</pre>
+              <div class="chat-detail-scroll">
+                <pre class="chat-detail-block chat-detail-block--raw">{{ detail.rawText }}</pre>
+              </div>
+            </template>
+          </template>
+        </div>
+      </details>
     </template>
 
     <template v-else>
@@ -156,7 +246,7 @@ onBeforeUnmount(() => {
         </summary>
 
         <div class="chat-inline-card__content">
-          <pre class="chat-inline-card__body">{{ event.bodyPreview }}</pre>
+          <pre class="chat-inline-card__body">{{ bodyContent }}</pre>
           <p
             v-if="detailLoading"
             class="chat-message__loading"
@@ -164,8 +254,10 @@ onBeforeUnmount(() => {
             正在加载详情…
           </p>
           <template v-else-if="detail">
-            <pre>{{ detail.bodyText }}</pre>
-            <pre>{{ detail.rawText }}</pre>
+            <pre class="chat-detail-block">{{ detail.bodyText }}</pre>
+            <div class="chat-detail-scroll">
+              <pre class="chat-detail-block chat-detail-block--raw">{{ detail.rawText }}</pre>
+            </div>
           </template>
         </div>
       </details>

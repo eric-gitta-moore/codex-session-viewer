@@ -34,7 +34,16 @@ function handleFiles(fileList: FileList | null): void {
 
 function openPicker(): void {
   if (props.loading) return
-  fileInput.value?.click()
+  const input = fileInput.value
+  if (!input) return
+
+  // 优先使用浏览器原生的 showPicker，避免隐藏 file input 在不同内核里出现点击不稳定的问题。
+  if (typeof input.showPicker === 'function') {
+    input.showPicker()
+    return
+  }
+
+  input.click()
 }
 
 function handleDrop(event: DragEvent): void {

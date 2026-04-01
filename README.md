@@ -49,8 +49,8 @@ These choices help reduce UI jank, memory duplication, and DOM pressure for larg
 
 The session is rendered as a conversational flow:
 
-- user messages as chat bubbles
-- assistant replies as chat bubbles
+- user messages as chat bubbles with full text shown inline
+- assistant replies as chat bubbles with full text shown inline
 - tools and debug events as compact expandable rows
 
 ### Compact tool cards

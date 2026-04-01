@@ -46,6 +46,8 @@ export interface SessionEventLite {
   callId: string | null
   title: string
   summary: string
+  statusLabel: string | null
+  bodyText: string
   bodyPreview: string
   hiddenByDefault: boolean
 }
@@ -60,6 +62,7 @@ export interface SessionEventDetail {
   eventId: string
   bodyText: string
   rawText: string
+  sections?: SessionEventDetailSection[]
 }
 
 export interface ParseProgress {
@@ -67,4 +70,11 @@ export interface ParseProgress {
   totalBytes: number
   parsedLines: number
   parsedRecords: number
+}
+
+export interface SessionEventDetailSection {
+  title: string
+  timestamp: string
+  bodyText: string
+  rawText: string
 }

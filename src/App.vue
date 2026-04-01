@@ -53,6 +53,11 @@ const displayEvents = computed<SessionEventLite[]>(() => {
     const previous = filtered[index - 1]
     if (!previous) return true
 
+    // 工具调用现在会聚合成单条耗时分隔线；这里不要再把相邻工具行误判成重复记录。
+    if (previous.category === 'tool' || event.category === 'tool') {
+      return true
+    }
+
     return !(
       previous.category === event.category &&
       previous.turnId === event.turnId &&
@@ -62,12 +67,12 @@ const displayEvents = computed<SessionEventLite[]>(() => {
 })
 
 function getSearchableText(event: SessionEventLite): string {
-  // Search operates on the lightweight event fields so we can avoid loading full message details.
-  return `${event.title}\n${event.summary}\n${event.bodyPreview}`.toLowerCase()
+  // 搜索只依赖主线程已有的轻量索引字段，避免为了检索再触发详情加载。
+  return `${event.title}\n${event.summary}\n${event.bodyText}\n${event.bodyPreview}`.toLowerCase()
 }
 
 function buildSearchExcerpt(event: SessionEventLite): string {
-  const excerptSource = event.summary || event.bodyPreview || event.title
+  const excerptSource = event.summary || event.bodyText || event.bodyPreview || event.title
   const normalized = excerptSource.replace(/\s+/g, ' ').trim()
 
   return normalized.slice(0, 120)
@@ -368,6 +373,16 @@ function pillClass(category: SessionEventLite['category']): string {
           <p>需要时再展开查看，不会默认打断主消息流。</p>
         </article>
       </div>
+
+      <section class="empty-panel__paths">
+        <h3>去哪里找 session.jsonl</h3>
+        <p>默认情况下，Codex 的 session 文件通常在下面这些目录里。如果你改过 `CODEX_HOME`，就优先去对应的 `sessions` 子目录找。</p>
+        <ul>
+          <li>macOS / Linux: <code>~/.codex/sessions/YYYY/MM/DD/*.jsonl</code></li>
+          <li>Windows: <code>%USERPROFILE%\\.codex\\sessions\\YYYY\\MM\\DD\\*.jsonl</code></li>
+          <li>自定义 CODEX_HOME: <code>$CODEX_HOME/sessions</code> 或 <code>%CODEX_HOME%\\sessions</code></li>
+        </ul>
+      </section>
     </section>
   </div>
 </template>

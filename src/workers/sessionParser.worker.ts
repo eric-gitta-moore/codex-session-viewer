@@ -3,6 +3,7 @@ import type {
   ParseIssue,
   ParseProgress,
   SessionEventDetail,
+  SessionEventDetailSection,
   SessionEventLite,
   SessionIndex,
   SessionSummary,
@@ -10,7 +11,7 @@ import type {
 
 const PREVIEW_LIMIT = 220
 const BODY_PREVIEW_LIMIT = 420
-const PROGRESS_INTERVAL_LINES = 400
+const PROGRESS_INTERVAL_MS = 60
 const decoder = new TextDecoder()
 
 interface RawRecord {
@@ -27,10 +28,11 @@ interface ParseState {
   totalRecords: number
   issues: ParseIssue[]
   events: SessionEventLite[]
-  rawLineByEventId: Map<string, string>
+  detailByEventId: Map<string, SessionEventDetail>
   activeTurnId: string | null
   turnIds: Set<string>
   toolCallIds: Set<string>
+  pendingToolBatch: PendingToolBatch | null
   startedAt: string | null
   endedAt: string | null
   sessionId: string | null
@@ -43,6 +45,16 @@ interface ParseState {
     inputTokens: number | null
     outputTokens: number | null
   }
+}
+
+interface PendingToolBatch {
+  startLine: number
+  turnId: string | null
+  startedAt: string | null
+  endedAt: string | null
+  sections: SessionEventDetailSection[]
+  toolTitles: string[]
+  callIds: string[]
 }
 
 type WorkerInboundMessage =
@@ -115,7 +127,9 @@ function inferCategory(record: RawRecord): EventCategory {
   if (payloadType === 'agent_message' || role === 'assistant') return 'assistant'
   if (
     payloadType === 'function_call' ||
+    payloadType === 'custom_tool_call' ||
     payloadType === 'function_call_output' ||
+    payloadType === 'custom_tool_call_output' ||
     payloadType === 'mcp_tool_call_end' ||
     payloadType === 'exec_command_end' ||
     payloadType === 'web_search_call' ||
@@ -145,7 +159,11 @@ function buildTitle(record: RawRecord): string {
   if (payloadType === 'function_call') {
     return `工具调用 · ${getString(record.payload?.name ?? null) ?? 'unknown'}`
   }
+  if (payloadType === 'custom_tool_call') {
+    return `工具调用 · ${getString(record.payload?.name ?? null) ?? 'unknown'}`
+  }
   if (payloadType === 'function_call_output') return '工具输出'
+  if (payloadType === 'custom_tool_call_output') return '工具输出'
   if (payloadType === 'mcp_tool_call_end') {
     const invocation = isObject(record.payload?.invocation) ? record.payload.invocation : null
     const server = getString(invocation?.server)
@@ -185,7 +203,17 @@ function buildBodyText(record: RawRecord): string {
     return `调用工具: ${name}\n\n参数:\n${argumentsText}`
   }
 
+  if (payloadType === 'custom_tool_call') {
+    const name = getString(payload?.name ?? null) ?? 'unknown'
+    const inputText = getString(payload?.input ?? null) ?? '{}'
+    return `调用工具: ${name}\n\n参数:\n${inputText}`
+  }
+
   if (payloadType === 'function_call_output') {
+    return getString(payload?.output ?? null) ?? ''
+  }
+
+  if (payloadType === 'custom_tool_call_output') {
     return getString(payload?.output ?? null) ?? ''
   }
 
@@ -262,6 +290,91 @@ function buildSummary(record: RawRecord): string {
   return clampPreview(buildBodyText(record))
 }
 
+function getDurationMsBetween(startedAt: string | null, endedAt: string | null): number | null {
+  if (!startedAt || !endedAt) return null
+
+  const startedMs = Date.parse(startedAt)
+  const endedMs = Date.parse(endedAt)
+  if (Number.isNaN(startedMs) || Number.isNaN(endedMs)) {
+    return null
+  }
+
+  return Math.max(endedMs - startedMs, 0)
+}
+
+function formatCompactDuration(durationMs: number | null): string {
+  if (durationMs === null) {
+    return '片刻'
+  }
+
+  if (durationMs < 1_000) {
+    return '<1s'
+  }
+
+  const totalSeconds = Math.floor(durationMs / 1_000)
+  const hours = Math.floor(totalSeconds / 3_600)
+  const minutes = Math.floor((totalSeconds % 3_600) / 60)
+  const seconds = totalSeconds % 60
+  const parts: string[] = []
+
+  if (hours > 0) {
+    parts.push(`${hours}h`)
+  }
+
+  if (minutes > 0) {
+    parts.push(`${minutes}m`)
+  }
+
+  if (seconds > 0 || parts.length === 0) {
+    parts.push(`${seconds}s`)
+  }
+
+  return parts.join(' ')
+}
+
+function buildToolStatusLabel(durationMs: number | null, isComplete: boolean): string {
+  if (!isComplete) {
+    return '工具调用中'
+  }
+
+  return `已处理 ${formatCompactDuration(durationMs)}`
+}
+
+function formatRawDetailSection(title: string, rawLine: string): string {
+  try {
+    const parsed = JSON.parse(rawLine)
+    return `${title}\n${JSON.stringify(parsed, null, 2)}`
+  } catch {
+    return `${title}\n${rawLine}`
+  }
+}
+
+function formatRawEvent(rawLine: string): string {
+  try {
+    return JSON.stringify(JSON.parse(rawLine), null, 2)
+  } catch {
+    return rawLine
+  }
+}
+
+function createToolBatchDetailSection(
+  record: RawRecord,
+  rawLine: string,
+): SessionEventDetailSection {
+  const bodyText = buildBodyText(record)
+
+  return {
+    title: buildTitle(record),
+    timestamp: record.timestamp || '',
+    bodyText,
+    rawText: formatRawEvent(rawLine),
+  }
+}
+
+function shouldInlineFullBody(category: EventCategory): boolean {
+  return category === 'user' || category === 'assistant'
+}
+
 function shouldHideByDefault(record: RawRecord, category: EventCategory): boolean {
   const payloadType = getString(record.payload?.type ?? null)
   const role = getString(record.payload?.role ?? null)
@@ -296,10 +409,11 @@ function createInitialState(file: File): ParseState {
     totalRecords: 0,
     issues: [],
     events: [],
-    rawLineByEventId: new Map<string, string>(),
+    detailByEventId: new Map<string, SessionEventDetail>(),
     activeTurnId: null,
     turnIds: new Set<string>(),
     toolCallIds: new Set<string>(),
+    pendingToolBatch: null,
     startedAt: null,
     endedAt: null,
     sessionId: null,
@@ -313,6 +427,124 @@ function createInitialState(file: File): ParseState {
       outputTokens: null,
     },
   }
+}
+
+function pushEvent(
+  state: ParseState,
+  event: Omit<SessionEventLite, 'id' | 'index'>,
+  detail: SessionEventDetail,
+): void {
+  const eventId = `event-${state.events.length}`
+
+  state.events.push({
+    id: eventId,
+    index: state.events.length,
+    ...event,
+  })
+  state.detailByEventId.set(eventId, {
+    ...detail,
+    eventId,
+  })
+}
+
+function createToolBatch(
+  record: RawRecord,
+  rawLine: string,
+  lineNumber: number,
+  turnId: string | null,
+): PendingToolBatch {
+  const callId = getString(record.payload?.call_id ?? null)
+
+  return {
+    startLine: lineNumber,
+    turnId,
+    startedAt: record.timestamp || null,
+    endedAt: record.timestamp || null,
+    sections: [createToolBatchDetailSection(record, rawLine)],
+    toolTitles: [buildTitle(record)],
+    callIds: callId ? [callId] : [],
+  }
+}
+
+function appendToolBatchRecord(pending: PendingToolBatch, record: RawRecord, rawLine: string): void {
+  if (record.timestamp) {
+    pending.startedAt = pending.startedAt ?? record.timestamp
+    pending.endedAt = record.timestamp
+  }
+
+  pending.sections.push(createToolBatchDetailSection(record, rawLine))
+
+  const title = buildTitle(record)
+  if (!pending.toolTitles.includes(title)) {
+    pending.toolTitles.push(title)
+  }
+
+  const callId = getString(record.payload?.call_id ?? null)
+  if (callId && !pending.callIds.includes(callId)) {
+    pending.callIds.push(callId)
+  }
+}
+
+function buildToolBatchTitle(pending: PendingToolBatch): string {
+  if (pending.toolTitles.length === 0) {
+    return '工具调用'
+  }
+
+  if (pending.toolTitles.length === 1) {
+    return pending.toolTitles[0]
+  }
+
+  return `工具调用 · ${pending.toolTitles.length} 项`
+}
+
+function flushToolBatch(state: ParseState, pending: PendingToolBatch): void {
+  const detailBodyText = pending.sections
+    .map((section, index) => {
+      return [`事件 ${index + 1} · ${section.title}`, section.bodyText].filter(Boolean).join('\n')
+    })
+    .join('\n\n')
+  const detailRawText = pending.sections
+    .map((section, index) => {
+      return `事件 ${index + 1} · ${section.title}\n${section.rawText}`
+    })
+    .join('\n\n')
+  const finishedAt = pending.endedAt ?? pending.startedAt ?? ''
+  const durationMs = getDurationMsBetween(pending.startedAt, pending.endedAt)
+
+  pushEvent(
+    state,
+    {
+      line: pending.startLine,
+      timestamp: finishedAt,
+      recordType: 'tool_batch',
+      payloadType: 'tool_batch',
+      category: 'tool',
+      role: null,
+      turnId: pending.turnId,
+      callId: pending.callIds[0] ?? null,
+      title: buildToolBatchTitle(pending),
+      summary: clampPreview(detailBodyText, PREVIEW_LIMIT),
+      statusLabel: buildToolStatusLabel(durationMs, true),
+      bodyText: '',
+      bodyPreview: clampPreview(detailBodyText, BODY_PREVIEW_LIMIT),
+      hiddenByDefault: false,
+    },
+    {
+      eventId: '',
+      bodyText: detailBodyText,
+      rawText: detailRawText,
+      sections: pending.sections,
+    },
+  )
+}
+
+function flushPendingToolBatch(state: ParseState): void {
+  if (!state.pendingToolBatch) {
+    return
+  }
+
+  flushToolBatch(state, state.pendingToolBatch)
+  state.pendingToolBatch = null
 }
 
 function createProgress(state: ParseState): ParseProgress {
@@ -401,27 +633,47 @@ function processParsedRecord(
 
   const category = inferCategory(record)
   const bodyText = buildBodyText(record)
-  const eventId = `event-${state.totalRecords - 1}`
+  const resolvedTurnId = directTurnId ?? state.activeTurnId
 
-  state.events.push({
-    id: eventId,
-    index: state.totalRecords - 1,
-    line: lineNumber,
-    timestamp: record.timestamp,
-    recordType: record.type,
-    payloadType,
-    category,
-    role: getString(record.payload?.role ?? null),
-    turnId: directTurnId ?? state.activeTurnId,
-    callId,
-    title: buildTitle(record),
-    summary: buildSummary(record),
-    bodyPreview: clampPreview(bodyText, BODY_PREVIEW_LIMIT),
-    hiddenByDefault: shouldHideByDefault(record, category),
-  })
+  if (state.pendingToolBatch && category !== 'tool' && !shouldHideByDefault(record, category)) {
+    flushPendingToolBatch(state)
+  }
 
-  // 原始行只保留在 worker 里，主线程只拿轻量事件索引。
-  state.rawLineByEventId.set(eventId, rawLine)
+  // 把连续工具活动折叠成一条主消息流记录，避免多个 tool event 把对话切碎。
+  if (category === 'tool') {
+    if (!state.pendingToolBatch) {
+      state.pendingToolBatch = createToolBatch(record, rawLine, lineNumber, resolvedTurnId)
+    } else {
+      appendToolBatchRecord(state.pendingToolBatch, record, rawLine)
+    }
+    return
+  }
+
+  pushEvent(
+    state,
+    {
+      line: lineNumber,
+      timestamp: record.timestamp,
+      recordType: record.type,
+      payloadType,
+      category,
+      role: getString(record.payload?.role ?? null),
+      turnId: resolvedTurnId,
+      callId,
+      title: buildTitle(record),
+      summary: buildSummary(record),
+      statusLabel: null,
+      // 主消息流里的用户和助手气泡默认直接展示完整正文，工具与调试节点仍保持摘要模式。
+      bodyText: shouldInlineFullBody(category) ? bodyText : '',
+      bodyPreview: clampPreview(bodyText, BODY_PREVIEW_LIMIT),
+      hiddenByDefault: shouldHideByDefault(record, category),
+    },
+    {
+      eventId: '',
+      bodyText,
+      rawText: formatRawDetailSection('原始事件', rawLine),
+    },
+  )
 }
 
 function processLine(rawLine: string, lineNumber: number, state: ParseState): void {
@@ -458,6 +710,23 @@ async function parseFile(file: File, generation: number): Promise<void> {
   const reader = file.stream().getReader()
   let buffer = ''
   let lineNumber = 0
+  let lastProgressSentAt = 0
+
+  async function emitProgressIfNeeded(force = false): Promise<void> {
+    const now = performance.now()
+    if (!force && now - lastProgressSentAt < PROGRESS_INTERVAL_MS) {
+      return
+    }
+
+    lastProgressSentAt = now
+    self.postMessage({
+      type: 'parse-progress',
+      progress: createProgress(state),
+    })
+
+    // 给主线程一个渲染进度条的机会，避免大文件解析时只在结束瞬间看到结果。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
 
   while (true) {
     if (generation !== parseGeneration) {
@@ -486,12 +755,7 @@ async function parseFile(file: File, generation: number): Promise<void> {
       processLine(line.replace(/\r$/, ''), lineNumber, state)
     }
 
-    if (lineNumber % PROGRESS_INTERVAL_LINES === 0) {
-      self.postMessage({
-        type: 'parse-progress',
-        progress: createProgress(state),
-      })
-    }
+    await emitProgressIfNeeded()
   }
 
   buffer += decoder.decode()
@@ -504,16 +768,15 @@ async function parseFile(file: File, generation: number): Promise<void> {
     return
   }
 
+  flushPendingToolBatch(state)
+
   const session: SessionIndex = {
     summary: buildSessionSummary(state),
     issues: state.issues,
     events: state.events,
   }
 
-  self.postMessage({
-    type: 'parse-progress',
-    progress: createProgress(state),
-  })
+  await emitProgressIfNeeded(true)
   self.postMessage({
     type: 'parse-complete',
     session,
@@ -521,27 +784,11 @@ async function parseFile(file: File, generation: number): Promise<void> {
 }
 
 function loadDetail(eventId: string): SessionEventDetail {
-  const rawLine = currentState?.rawLineByEventId.get(eventId)
-  if (!rawLine) {
+  const detail = currentState?.detailByEventId.get(eventId)
+  if (!detail) {
     throw new Error('找不到对应事件的原始内容')
   }
-
-  const parsed = JSON.parse(rawLine)
-  if (!isObject(parsed)) {
-    throw new Error('事件内容不是合法 JSON 对象')
-  }
-
-  const record: RawRecord = {
-    timestamp: getString(parsed.timestamp) ?? '',
-    type: getString(parsed.type) ?? 'unknown',
-    payload: isObject(parsed.payload) ? parsed.payload : null,
-  }
-
-  return {
-    eventId,
-    bodyText: buildBodyText(record),
-    rawText: JSON.stringify(parsed, null, 2),
-  }
+  return detail
 }
 
 self.addEventListener('message', async (event: MessageEvent<WorkerInboundMessage>) => {
