@@ -129,15 +129,23 @@ onBeforeUnmount(() => {
           },
         ]"
       >
-        <div class="chat-message__meta">
-          <time>{{ formatTime(event.timestamp) }}</time>
-        </div>
         <pre class="chat-message__body">{{ bodyContent }}</pre>
         <details
-          class="chat-message__details"
+          class="chat-message__details chat-message__details--bubble"
           @toggle="handleToggle(($event.target as HTMLDetailsElement).open)"
         >
-          <summary>{{ detailSummaryLabel }}</summary>
+          <summary class="chat-message__meta">
+            <span class="chat-message__meta-trigger">
+              <span class="chat-message__meta-action">{{ detailSummaryLabel }}</span>
+              <span
+                class="chat-disclosure-icon"
+                aria-hidden="true"
+              >
+                ▾
+              </span>
+            </span>
+            <time>{{ formatTime(event.timestamp) }}</time>
+          </summary>
           <p
             v-if="detailLoading"
             class="chat-message__loading"
@@ -168,7 +176,15 @@ onBeforeUnmount(() => {
       >
         <summary class="chat-tool-status__summary">
           <span class="chat-tool-status__line" />
-          <span class="chat-tool-status__label">{{ toolStatusLabel }}</span>
+          <span class="chat-tool-status__label">
+            {{ toolStatusLabel }}
+            <span
+              class="chat-disclosure-icon"
+              aria-hidden="true"
+            >
+              ▾
+            </span>
+          </span>
           <span class="chat-tool-status__line" />
         </summary>
 
@@ -204,6 +220,12 @@ onBeforeUnmount(() => {
                   <span class="chat-inline-card__dot" />
                   <span class="chat-inline-card__speaker">事件 {{ index + 1 }}</span>
                   <span class="chat-inline-card__title">{{ section.title }}</span>
+                  <span
+                    class="chat-disclosure-icon"
+                    aria-hidden="true"
+                  >
+                    ▾
+                  </span>
                   <span class="chat-inline-card__time">{{ formatTime(section.timestamp || event.timestamp) }}</span>
                 </summary>
 
@@ -242,6 +264,12 @@ onBeforeUnmount(() => {
           <span class="chat-inline-card__dot" />
           <span class="chat-inline-card__speaker">{{ speakerLabel(event.category) }}</span>
           <span class="chat-inline-card__title">{{ event.title }}</span>
+          <span
+            class="chat-disclosure-icon"
+            aria-hidden="true"
+          >
+            ▾
+          </span>
           <span class="chat-inline-card__time">{{ formatTime(event.timestamp) }}</span>
         </summary>
 
