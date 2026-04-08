@@ -5,6 +5,8 @@
 Codex Session Viewer 是一个本地网页工具，用来把 Codex 的 session 日志按聊天流的方式回放出来。
 相比直接读原始 `jsonl` 文件，它更适合用来复盘一次 agent 执行过程，查看用户消息、助手回复、工具调用和调试事件。
 
+<img width="1820" height="1171" alt="image" src="https://github.com/user-attachments/assets/1c9d27bd-1df3-4d04-ae1f-bc058901f744" />
+
 ## 项目定位
 
 这个项目目前是一个“单文件、本地优先”的查看器：
