@@ -5,6 +5,9 @@
 Codex Session Viewer is a local web app for replaying Codex session logs as a chat-style timeline.
 Instead of browsing raw JSONL files directly, you upload a single session file and inspect the conversation, tool calls, and system events in a UI that feels closer to a real chat product.
 
+<img width="1820" height="1171" alt="image" src="https://github.com/user-attachments/assets/1c9d27bd-1df3-4d04-ae1f-bc058901f744" />
+
+
 ## What It Does
 
 - Upload a single Codex session `.jsonl` file from your machine
