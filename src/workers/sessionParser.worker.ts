@@ -40,11 +40,7 @@ interface ParseState {
   model: string | null
   cliVersion: string | null
   source: string | null
-  lastTokenTotals: {
-    totalTokens: number | null
-    inputTokens: number | null
-    outputTokens: number | null
-  }
+  lastTokenTotals: TokenUsageStats
 }
 
 interface PendingToolBatch {
@@ -56,6 +52,14 @@ interface PendingToolBatch {
   toolTitles: string[]
   callIds: string[]
   invocationCount: number
+}
+
+interface TokenUsageStats {
+  totalTokens: number | null
+  inputTokens: number | null
+  cachedInputTokens: number | null
+  outputTokens: number | null
+  reasoningOutputTokens: number | null
 }
 
 type WorkerInboundMessage =
@@ -88,6 +92,31 @@ function getCommandText(value: unknown): string | null {
   }
 
   return null
+}
+
+function readTokenUsage(value: unknown): TokenUsageStats {
+  const usage = isObject(value) ? value : null
+
+  return {
+    totalTokens: getNumber(usage?.total_tokens),
+    inputTokens: getNumber(usage?.input_tokens),
+    cachedInputTokens: getNumber(usage?.cached_input_tokens),
+    outputTokens: getNumber(usage?.output_tokens),
+    reasoningOutputTokens: getNumber(usage?.reasoning_output_tokens),
+  }
+}
+
+function getFreshInputTokens(usage: TokenUsageStats): number | null {
+  if (usage.inputTokens === null) {
+    return null
+  }
+
+  // cached_input_tokens 是 input_tokens 的子集，单独减出来后更容易看懂真实新输入量。
+  return Math.max(usage.inputTokens - (usage.cachedInputTokens ?? 0), 0)
+}
+
+function formatTokenValue(value: number | null): string {
+  return value === null ? '未知' : value.toLocaleString('zh-CN')
 }
 
 function clampPreview(text: string | null, limit = PREVIEW_LIMIT): string {
@@ -247,15 +276,23 @@ function buildBodyText(record: RawRecord): string {
 
   if (payloadType === 'token_count') {
     const info = isObject(payload?.info) ? payload.info : null
-    const total = isObject(info?.total_token_usage) ? info.total_token_usage : null
-    const last = isObject(info?.last_token_usage) ? info.last_token_usage : null
+    const total = readTokenUsage(info?.total_token_usage)
+    const last = readTokenUsage(info?.last_token_usage)
 
     return [
-      `累计 tokens: ${getNumber(total?.total_tokens) ?? 0}`,
-      `输入: ${getNumber(total?.input_tokens) ?? 0}`,
-      `输出: ${getNumber(total?.output_tokens) ?? 0}`,
-      `推理: ${getNumber(total?.reasoning_output_tokens) ?? 0}`,
-      `最近一次增量: ${getNumber(last?.total_tokens) ?? 0}`,
+      `累计 tokens: ${formatTokenValue(total.totalTokens)}`,
+      `累计输入: ${formatTokenValue(total.inputTokens)}`,
+      `累计输入缓存命中: ${formatTokenValue(total.cachedInputTokens)}`,
+      `累计非缓存输入: ${formatTokenValue(getFreshInputTokens(total))}`,
+      `累计输出: ${formatTokenValue(total.outputTokens)}`,
+      `累计推理输出: ${formatTokenValue(total.reasoningOutputTokens)}`,
+      '',
+      `最近一次总增量: ${formatTokenValue(last.totalTokens)}`,
+      `最近一次输入增量: ${formatTokenValue(last.inputTokens)}`,
+      `最近一次输入缓存命中: ${formatTokenValue(last.cachedInputTokens)}`,
+      `最近一次非缓存输入: ${formatTokenValue(getFreshInputTokens(last))}`,
+      `最近一次输出增量: ${formatTokenValue(last.outputTokens)}`,
+      `最近一次推理输出增量: ${formatTokenValue(last.reasoningOutputTokens)}`,
     ].join('\n')
   }
 
@@ -284,8 +321,10 @@ function buildSummary(record: RawRecord): string {
 
   if (payloadType === 'token_count') {
     const info = isObject(record.payload?.info) ? record.payload.info : null
-    const total = isObject(info?.total_token_usage) ? info.total_token_usage : null
-    return clampPreview(`累计 ${getNumber(total?.total_tokens) ?? 0} tokens`)
+    const total = readTokenUsage(info?.total_token_usage)
+    return clampPreview(
+      `累计 ${formatTokenValue(total.totalTokens)} tokens · 输入 ${formatTokenValue(total.inputTokens)}（缓存 ${formatTokenValue(total.cachedInputTokens)}）· 输出 ${formatTokenValue(total.outputTokens)}`,
+    )
   }
 
   return clampPreview(buildBodyText(record))
@@ -451,7 +490,9 @@ function createInitialState(file: File): ParseState {
     lastTokenTotals: {
       totalTokens: null,
       inputTokens: null,
+      cachedInputTokens: null,
       outputTokens: null,
+      reasoningOutputTokens: null,
     },
   }
 }
@@ -621,7 +662,9 @@ function buildSessionSummary(state: ParseState): SessionSummary {
     totalToolCalls: state.toolCallIds.size,
     totalTokens: state.lastTokenTotals.totalTokens,
     totalInputTokens: state.lastTokenTotals.inputTokens,
+    totalCachedInputTokens: state.lastTokenTotals.cachedInputTokens,
     totalOutputTokens: state.lastTokenTotals.outputTokens,
+    totalReasoningOutputTokens: state.lastTokenTotals.reasoningOutputTokens,
     parseIssueCount: state.issues.length,
   }
 }
@@ -668,12 +711,8 @@ function processParsedRecord(
   const payloadType = getString(record.payload?.type ?? null)
   if (payloadType === 'token_count') {
     const info = isObject(record.payload?.info) ? record.payload.info : null
-    const total = isObject(info?.total_token_usage) ? info.total_token_usage : null
-    state.lastTokenTotals = {
-      totalTokens: getNumber(total?.total_tokens),
-      inputTokens: getNumber(total?.input_tokens),
-      outputTokens: getNumber(total?.output_tokens),
-    }
+    // token_count 会不断覆盖到最新快照；summary 只保留最后一次累计值，作为整段 session 的总览。
+    state.lastTokenTotals = readTokenUsage(info?.total_token_usage)
   }
 
   const category = inferCategory(record)
