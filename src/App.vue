@@ -186,6 +186,19 @@ const searchState = computed(() => {
   }
 })
 
+function formatStatNumber(value: number | null): string {
+  return value === null ? '未知' : value.toLocaleString('zh-CN')
+}
+
+function getFreshInputTokens(summary: SessionIndex['summary']): number | null {
+  if (summary.totalInputTokens === null) {
+    return null
+  }
+
+  // input 里已经包含缓存命中的部分，这里额外减出来，方便看真实新增输入量。
+  return Math.max(summary.totalInputTokens - (summary.totalCachedInputTokens ?? 0), 0)
+}
+
 const headlineStats = computed(() => {
   if (!session.value) return []
 
@@ -193,22 +206,23 @@ const headlineStats = computed(() => {
     `模型 ${session.value.summary.model ?? '未知'}`,
     `${session.value.summary.totalTurns} 个 turn`,
     `${session.value.summary.totalToolCalls} 次工具调用`,
-    `${session.value.summary.totalTokens?.toLocaleString('zh-CN') ?? '未知'} tokens`,
     formatDuration(session.value.summary.durationMs),
   ]
 })
 
-const feedStats = computed(() => {
+const baseStats = computed(() => {
   if (!session.value) return []
+
+  const summary = session.value.summary
 
   return [
     {
       label: '文件',
-      value: session.value.summary.fileName,
+      value: summary.fileName,
     },
     {
       label: '工作目录',
-      value: session.value.summary.cwd ?? '未知',
+      value: summary.cwd ?? '未知',
     },
     {
       label: '可见消息',
@@ -217,6 +231,39 @@ const feedStats = computed(() => {
     {
       label: '解析告警',
       value: String(session.value.issues.length),
+    },
+  ]
+})
+
+const tokenStats = computed(() => {
+  if (!session.value) return []
+
+  const summary = session.value.summary
+
+  return [
+    {
+      label: '总 Token',
+      value: formatStatNumber(summary.totalTokens),
+    },
+    {
+      label: '输入 Token（含缓存）',
+      value: formatStatNumber(summary.totalInputTokens),
+    },
+    {
+      label: '输入缓存命中',
+      value: formatStatNumber(summary.totalCachedInputTokens),
+    },
+    {
+      label: '输入 Token（非缓存）',
+      value: formatStatNumber(getFreshInputTokens(summary)),
+    },
+    {
+      label: '输出 Token',
+      value: formatStatNumber(summary.totalOutputTokens),
+    },
+    {
+      label: '推理输出 Token',
+      value: formatStatNumber(summary.totalReasoningOutputTokens),
     },
   ]
 })
@@ -447,7 +494,7 @@ function pillClass(category: SessionEventLite['category']): string {
 
         <div class="chat-shell__meta">
           <div
-            v-for="stat in feedStats"
+            v-for="stat in baseStats"
             :key="stat.label"
             class="chat-shell__meta-item"
           >
@@ -455,6 +502,24 @@ function pillClass(category: SessionEventLite['category']): string {
             <strong>{{ stat.value }}</strong>
           </div>
         </div>
+
+        <section class="token-panel">
+          <div class="token-panel__header">
+            <span class="token-panel__eyebrow">Token Stats</span>
+            <strong>输入、输出与缓存命中拆分</strong>
+          </div>
+
+          <div class="token-panel__grid">
+            <div
+              v-for="stat in tokenStats"
+              :key="stat.label"
+              class="token-panel__item"
+            >
+              <span>{{ stat.label }}</span>
+              <strong>{{ stat.value }}</strong>
+            </div>
+          </div>
+        </section>
 
         <div class="chat-shell__tags">
           <span

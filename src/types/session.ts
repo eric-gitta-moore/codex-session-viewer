@@ -29,7 +29,9 @@ export interface SessionSummary {
   totalToolCalls: number
   totalTokens: number | null
   totalInputTokens: number | null
+  totalCachedInputTokens: number | null
   totalOutputTokens: number | null
+  totalReasoningOutputTokens: number | null
   parseIssueCount: number
 }
 

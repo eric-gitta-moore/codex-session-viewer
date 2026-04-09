@@ -483,7 +483,7 @@ pre {
 
 .chat-shell__meta {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 10px;
 }
 
@@ -502,6 +502,63 @@ pre {
 }
 
 .chat-shell__meta-item strong {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.token-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 118, 110, 0.14);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.82) 42%),
+    rgba(255, 255, 255, 0.88);
+}
+
+.token-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.token-panel__eyebrow {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.token-panel__header strong {
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.token-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.token-panel__item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(15, 118, 110, 0.08);
+}
+
+.token-panel__item span {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.token-panel__item strong {
   color: var(--text);
   word-break: break-word;
 }
